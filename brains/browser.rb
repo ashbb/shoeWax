@@ -1,201 +1,216 @@
-require 'find'
-
-class BrowserListManager < Shoes::Widget
-  include Observable
-  def initialize(array, selected=[])
-    @selected = selected
-    stack{
-      array.each{|entry|
-        txt = nil
-        f = flow width: 1.0, height: 25 do
-          txt = para File.basename(entry), stroke: gray
-        end
-        f.click{
-          unless @selected.include?(entry)
-            txt.text = fg(txt.text, yellow)
-            changed; notify_observers(entry)
-          else
-            txt.text = fg(txt.text, gray)
-            changed; notify_observers("unselect:#{entry}")
-          end
-        }
-      }
-    }
-  end
-end  #class ListManager
-
-#---------------------------------------------------------
-
 
 class DirBrowser < Shoes::Widget
-  include Observable
-  
-  def initialize(path)
-    @win = window title: "shoeWax directoryBrowser", width: 820 do
+	include Observable
+	
+	def initialize(path)
+		
+		@homedir = File.expand_path(File.dirname(__FILE__))
+		@okfiles = [/.mp3/, /.flac/, /.ogg/, /.wav/]
+		@selected = []
+		
+		@win = Gtk::Window.new
+		@win.set_size_request(750, 450)
+                @win.icon = Gdk::Pixbuf.new File.join(DIR, '../static/gshoes-icon.png')
+                @win.title = 'Directory Browser'
+		
+		## rightside TreeView
+		@list = Gtk::ListStore.new(String, String)
+		@view = Gtk::TreeView.new(@list)
+		@view.reorderable=(false)
+		@view.enable_search=(true)
+		@view.headers_visible=(false)
+		@renderer = Gtk::CellRendererText.new
+		@column = Gtk::TreeViewColumn.new("", @renderer, :text => 0)
+		@view.append_column(@column)
+		@listselection = @view.selection
+		@listselection.mode=(Gtk::SELECTION_MULTIPLE)
+		@view.signal_connect("row-activated"){|view, path, column|
+			right_select(path.indices[0])
+			add_btns_active(false)
+		}
+		@listselection.signal_connect("changed"){add_btns_active(true)}
+		
+		## main panel
+		@main = Gtk::HBox.new(false, 5)
+		
+		#### right side
+		@right = Gtk::VBox.new(false, 2)
+		
+		@rightpane = Gtk::ScrolledWindow.new
+		@rightpane.set_size_request(500, 450)
+		horizontal = @rightpane.hadjustment
+		vertical = @rightpane.vadjustment
+		viewport = Gtk::Viewport.new(horizontal, vertical)
+		@rightpane.set_policy(Gtk::POLICY_AUTOMATIC, Gtk::POLICY_ALWAYS)
+		@rightpane.add_with_viewport(@view)
+		
+		@right.pack_start(@rightpane, true, true, 2)
+		
+		#### left side
+		@left = Gtk::VBox.new(false, 2)
+		@left.set_size_request(200, 450)
+		
+		current_btn_frame = Gtk::Frame.new()
+		@current_dir_btn = Gtk::EventBox.new()
+		@current_dir_btn.set_size_request(200, 200)
+		@img = Gtk::Image.new()
+		@current_dir_btn.add(@img)
+		@current_dir_btn.signal_connect("button_press_event"){
+			@listselection.select_all
+		}
+		current_btn_frame.add(@current_dir_btn)
+		
+		up_btn_frame = Gtk::Frame.new("/../")
+		up_btn_frame.label_xalign = 0.05
+		@up_dir_btn = Gtk::EventBox.new()
+		@current_dir_text = Gtk::Label.new()
+		@current_dir_text.width_chars = (26)
+		@current_dir_text.set_wrap(true)
+		@current_dir_text.justify = Gtk::JUSTIFY_CENTER
+		@current_dir_text.ypad = 5
+		@up_dir_btn.add(@current_dir_text)
+		@up_dir_btn.signal_connect("button_press_event"){up_one_dir}
+		up_btn_frame.add(@up_dir_btn)
+		
+		add_btns_box = Gtk::HBox.new(true, 2)
+		@append_btn = Gtk::Button.new("list <<")
+		@append_btn.signal_connect("clicked"){add_selection("append")}
+		@prepend_btn = Gtk::Button.new(">> list")
+		@prepend_btn.signal_connect("clicked"){add_selection("prepend")}
+		@append_btn.sensitive = false
+		@prepend_btn.sensitive = false
+		add_btns_box.pack_start(@append_btn, true, true, 2)
+		add_btns_box.pack_start(@prepend_btn, true, true, 2)
 
-      @homedir = File.expand_path(File.dirname(__FILE__))
-      @leftpane = stack(width: 200, height: 500){}
-      @rightpane = flow(width: -205, height: 500){}
-      @okfiles = %W[.mp3 .flac .ogg .wav]
-    
-      path = Dir.home unless File.exists?(path)
+		@left.pack_start(current_btn_frame, false, false, 10)
+		@left.pack_start(up_btn_frame, false, false, 10)
+		@left.pack_end(add_btns_box, false, false, 10)
+		
+		## main panel
+		@leftalign = Gtk::Alignment.new(0.5, 0, 0, 0)
+		@leftalign.add(@left)
+		@rightalign = Gtk::Alignment.new(0, 0, 1, 0)
+		@rightalign.add(@right)
+		
+		@main.pack_start(@leftalign, true, true, 2)
+		@main.pack_start(@rightalign, true, true, 2)
+		
+		@win.add(@main)
+		
+		pathscan(path)
+		update_ui
+		
+		@win.show_all
+		
+	end
+	
+	def update_ui
+		@current_dir_btn.remove(@img)
+		pbuf = Gdk::Pixbuf.new(@image_file, 200, 200)
+		@img = Gtk::Image.new(pbuf)
+		@current_dir_btn.add(@img)
+		@current_dir_text.text = @current_dir
+		@left.show_all
 
-      def showpath(path)
-        @selected = []
-        [@leftpane, @leftpane_img].clear
-        @rightpane.clear
-
-        pathscan(path)
-    
-        leftSide(path)
-        if @files[0]
-          rightSideFiles(@files)
-        elsif @dirs[0]
-          rightSideDirs(@dirs)
-        end
-      end
-
-      def pathscan(path)
-        dirs = []
-        files = []
-        Dir.open(path){|dir|
-          for entry in dir
-            next if entry == '.'
-            next if entry == '..'
-            item = path + File::Separator + entry
-            if File.directory?(item)
-              dirs << item
-            else
-              @okfiles.each{|ok| files << item if item.downcase.include?(ok)}
-            end
-          end
-        }
-        @dirs = dirs.sort
-        @files = files.sort
-      end
-
-      def leftSide(path)
-        getImage(path)
-        @leftpane.append{
-          para path, stroke: gray, width: 180, align: "center"
-        }
-        @leftpane.append{
-          @leftpane_img = image(@img, width: 180, height: 180).move(8, 190)
-        }
-        @leftpane.append{
-          upbtn = button("up"){
-            new = File.split(path)[0]
-            showpath(new)
-          }
-          upbtn.move(75, 380)
-          appbtn = button("list << dir"){
-            addfiles = []
-            Find.find(path){|f|
-              @okfiles.each{|ok| addfiles << f if f.downcase.include?(ok)}
-            }
-            addfiles << "LIST:APPEND"
-            changed; notify_observers(addfiles)
-            new = File.split(path)[0]
-            showpath(new)
-          }
-          appbtn.move(38, 435)
-          prebtn = button("dir >> list"){
-            addfiles = []
-            Find.find(path){|f|
-              @okfiles.each{|ok| addfiles << f if f.downcase.include?(ok)}
-            }
-            addfiles << "LIST:PREPEND"
-            changed; notify_observers(addfiles)
-            new = File.split(path)[0]
-            showpath(new)
-          }
-          prebtn.move(38, 465)
-        }
-      end
-
-      def rightSideDirs(dirs)
-        dirs.each{|d|
-          getImage(d)
-          @rightpane.append{
-            s = stack width:200 do
-              i = image(@img, width: 190, height: 190, align: "center")
-              para File.basename(d), stroke: gray, align: "center"
-            end
-            s.click{showpath(d)}
-          }
-        }
-      end
-
-      def rightSideFiles(files)
-        @rightpane.clear
-        @rightpane.append{
-          th = (@rightpane.parent.height * 0.9).round.to_i
-          bh = (@rightpane.parent.height * 0.1).round.to_i
-          top = stack(width: 1.0, height: th){}
-          bottom = stack(width: 1.0, height: bh){}
-        
-          top.append{
-            lm = browser_list_manager(files)
-            lm.add_observer(self)
-          }
-
-          bottom.append{
-            btns = flow{
-
-              button("list << tracks"){
-                @selected << "LIST:APPEND"
-                changed; notify_observers(@selected)
-                @selected = []
-                rightSideFiles(files)
-              }
-        
-              button("tracks >> list"){
-                @selected << "LIST:PREPEND"
-                changed; notify_observers(@selected)
-                @selected = []
-                rightSideFiles(files)
-              }
-  
-            }
-            #btns.style(top: 10, left: 20)
-          }
-        }
-      end
-
-      def getImage(path)
-        Dir.chdir(path)
-        imgfiles = Dir['*.{jpg,JPG,png,PNG,gif,GIF}']
-        imgfile = imgfiles[0]
-        imgfile = "nofile.jpg" if imgfile == nil
-        if File.exist?(imgfile)
-          @img = path + File::Separator + imgfile
-        else
-          @img = @homedir + File::Separator + "images" + File::Separator + "no_cover.jpg"
-        end
-      end
-      
-      def update(message)
-        if message.include?("unselect")
-          index = message.split(":")[-1]
-          @selected.delete(index)
-        else
-        @selected << message
-        end
-      end
-
-      showpath(path)
-
-    end #window
-
-  end #initialize
-
-  def add_observer(observer)
-    @win.add_observer(observer)
-  end
-  
-  def close
-    @win.close
-  end
-  
-  
-end  #class DirBrowser
+		@list.clear
+		@dirs.each{|dir| add_to_list(dir)} if @dirs[0]
+		@files.each{|file| add_to_list(file)} if @files[0]
+	end
+	
+	def add_to_list(entry)
+		iter = @list.append
+		@list.set_value(iter, 0, File.basename(entry))
+		@list.set_value(iter, 1, entry)
+	end
+	
+	def right_select(index)
+		if @dirs.include?(@dirs[index])
+			update_dir(@dirs[index])
+		elsif @files.include?(@files[index - @dirs.length])
+			changed; notify_observers([@files[index - @dirs.length], "LIST:PLAY_NOW"])
+		end
+	end
+	
+	def up_one_dir
+		newpath = @current_dir.split(File::Separator)[0..-2].join(File::Separator)
+		update_dir(newpath)
+		add_btns_active(false)
+	end
+	
+	def update_dir(path)
+		pathscan(path)
+		update_ui
+	end
+	
+	def add_btns_active(boolean)
+		@append_btn.sensitive = boolean
+		@prepend_btn.sensitive = boolean
+	end
+	
+	def add_selection(position)
+		dirs = []
+		files = []
+		@listselection.selected_each{|mod, path, iter|
+			dirs << iter[1] ? File.directory?(iter[1]) : files << iter[1]
+		}
+		
+		files.each{|file| @selected << file} if files[0]		
+		
+		if dirs[0]
+			dirs.each{|dir| 
+				Find.find(dir){|item|
+				@okfiles.each{|ok| @selected << item if item.downcase =~ ok}
+				}	
+			}
+		end
+		
+		if position == "prepend"
+			@selected << "LIST:PREPEND"
+		else
+			@selected << "LIST:APPEND"
+		end
+		
+		changed; notify_observers(@selected)
+		@selected = []
+		@listselection.unselect_all
+	end
+	
+	def pathscan(path)
+		if File.directory?(path)
+			dirs = []
+			files = []
+			Dir.open(path){|dir|
+				for entry in dir
+					next if entry == '.'
+					next if entry == '..'
+					unless entry[0] == '.'
+						item = path + File::Separator + entry
+						if File.directory?(item)
+							dirs << item unless File.basename(item)[0] == "."
+						else
+							@okfiles.each{|ok| files << item if item.downcase =~ ok}
+						end
+					end
+				end
+			}
+			@dirs = dirs.sort
+			@files = files.sort
+			@current_dir = path
+			@left_width = (self.width / 4) + 20
+			get_image(@current_dir)
+		end
+	end
+	
+	def get_image(path)
+		image_files = []
+		Dir.entries(path).each{|entry|
+			image_files << entry if entry.downcase.include?(".jpg") || entry.downcase.include?(".png") || entry.downcase.include?(".gif")
+		}
+		if image_files[0]
+			@image_file = path + File::Separator + image_files[0]
+		else
+			@image_file = @homedir + File::Separator + "images" + File::Separator + "no_cover.jpg"
+		end
+	end
+	
+end	#DirBrowser

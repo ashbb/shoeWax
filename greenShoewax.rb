@@ -7,6 +7,7 @@ require File.join(brainsdir, "playlist")
 require File.join(brainsdir,  "browser")
 require File.join(brainsdir, "scrollbox")
 require File.join(brainsdir, "settings_manager")
+require File.join(brainsdir, "helper_methods")
 
 settings_file = File.join(brainsdir, "settings", "settings.txt")
 if File.exists?(settings_file)
@@ -17,7 +18,7 @@ if File.exists?(settings_file)
 else
   settings = [
     "none", "shuffle off", "none", "#title# - #artist# - #album#",
-    "50%", "Arial", "13", "rgb(255, 255, 255)", "rgb(0, 0, 0)", "none"
+    "50%", "Arial", "13", "255, 255, 255", "0, 0, 0", "none"
   ]
   File.open(settings_file, "w"){|file|
     settings.each{|line| file.puts line}
@@ -46,11 +47,14 @@ Shoes.app title: "ShoeWax", width: 728 * scl, height: 593 * scl do
   init_wax
   
   @brainsdir = brainsdir
-  @musicdir = wax_settings[9]
   @imagedir = imagedir
-  @back = background wax_settings[8]
   @scale = scl
   @wax_info = "shoeWax"
+	if File.exists?(wax_settings[9])
+		@musicdir = wax_settings[9]
+	else
+		@musicdir = File.dirname(File.expand_path(__FILE__))
+	end
   
   batter_up_wax
   
@@ -62,6 +66,16 @@ Shoes.app title: "ShoeWax", width: 728 * scl, height: 593 * scl do
   nofill; nostroke
   seekarea = rect((325 * @scale).round, (360 * @scale).round, (125 * @scale).round, (125 * @scale).round)
   seekarea.click{seek}
+	
+	def get_colors(settings)
+		txt_clr = settings[7].split(',')
+		@text_color = rgb(txt_clr[0].to_f.round(3), txt_clr[1].to_f.round(3), txt_clr[2].to_f.round(3))
+		bg_clr = settings[8].split(',')
+		@bg_color = rgb(bg_clr[0].to_f.round(3), bg_clr[1].to_f.round(3), bg_clr[2].to_f.round(3))
+	end
+	
+	get_colors(wax_settings)
+	background @bg_color
   fill black; stroke black
   
   if wax_coverart
@@ -137,8 +151,8 @@ Shoes.app title: "ShoeWax", width: 728 * scl, height: 593 * scl do
   
   dbbtn = image(File.join(@imagedir, "dugout.png")).move(l+listbtn.width+2, t)
   dbbtn.click{
-    if Shoes.APPS.to_s.include?("directoryBrowser")
-      @browser.close
+    if @browser
+      @browser.close; @browser = nil
     else
       browser(@musicdir)
     end
@@ -150,7 +164,9 @@ Shoes.app title: "ShoeWax", width: 728 * scl, height: 593 * scl do
     if Shoes.APPS.to_s.include?("settings")
       @set_man.close
     else
-    stack{@set_man = settings_manager; @set_man.add_observer(self)}
+			@set_man = window height: 490 do
+				sm = settings_manager; sm.add_observer(self.owner)
+			end
     end
   }
   hover_toggle(setbtn, "settingsHOVER.png")
@@ -162,12 +178,14 @@ Shoes.app title: "ShoeWax", width: 728 * scl, height: 593 * scl do
   def show_info_win
     sz = wax_settings[6].to_i
     h = (sz + (21 + ((sz / 7) * 7))).round
+		text_color = @text_color
+		bg_color = @bg_color
     
     @info_win = window title: "shoeWax nowPlaying", height: h, scroll: false do
-      background self.owner.wax_settings[8]
+      background bg_color
       self.owner.instance_variable_set(
         "@info_box", scroll_box(self.owner.wax_info, self.owner.wax_settings[5],
-        sz, self.owner.wax_settings[7], self.owner.wax_settings[8])
+        sz, text_color, bg_color)
       )
     end
     @info_win_open = true
@@ -253,16 +271,37 @@ Shoes.app title: "ShoeWax", width: 728 * scl, height: 593 * scl do
       
     when message == "LIST:BROWSER"
       browser(@musicdir)
+			
+		when msg == "LIST:PLAY_NOW"
+			message.pop
+			if wax_lineup.include?(message[0])
+				self.wax_batter = wax_lineup.index(message[0])
+				batter_up_wax
+				stop_wax; playpause_track
+			else
+				if wax_lineup.empty?
+					wax_lineup << message[0]
+					batter_up_wax
+					playpause_track
+				else
+					wax_lineup.insert(wax_batter + 1, message[0])
+					next_track
+				end
+				update_playlist(wax_lineup)
+			end
+			@cover.path = wax_coverart
+			@info_box.show_info(File.basename(wax_atbat)) if @info_win
       
     when msg == "TITLE_FORMAT"
       message.pop
       save_wax_settings(message)
       read_wax_settings
-      fill = wax_settings[8]
+			get_colors(wax_settings)
+			fill = @bg_color
       if @info_win
         @info_win.close
         show_info_win
-        @info_box.set_format(wax_settings[5], wax_settings[6], wax_settings[7], wax_settings[8])
+        #@info_box.set_format(wax_settings[5], wax_settings[6], @text_color, @bg_color)
       end
     end  #case
     
@@ -358,8 +397,8 @@ Shoes.app title: "ShoeWax", width: 728 * scl, height: 593 * scl do
   
   
   def browser(basedir)
-    @browser = dir_browser(basedir)
-    @browser.add_observer(self)
+		@browser = dir_browser(basedir)
+		@browser.add_observer(self)
   end
   
   #---------------------------------
@@ -368,10 +407,10 @@ Shoes.app title: "ShoeWax", width: 728 * scl, height: 593 * scl do
   add_observer(self) 
   
   # close all windows and save at shutdown
-  #transport.finish{
-    #stop_wax
+  #self.close{
+  #  stop_wax
     #save_wax_settings(wax_settings)
-    #quit
+  #  quit
   #}
   
 end  #Shoes.app
